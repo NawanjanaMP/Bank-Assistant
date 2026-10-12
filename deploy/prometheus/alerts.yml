@@ -1,0 +1,53 @@
+groups:
+  - name: bank-assistant
+    rules:
+      - alert: TurnErrorRateHigh
+        expr: sum(rate(bankai_turns_total{outcome=~"error|llm_unavailable"}[5m])) / clamp_min(sum(rate(bankai_turns_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: { severity: page }
+        annotations: { summary: "More than 5% of chat turns are failing" }
+
+      - alert: SlowFirstToken
+        expr: histogram_quantile(0.95, sum by (le) (rate(bankai_time_to_first_token_seconds_bucket[10m]))) > 4
+        for: 10m
+        labels: { severity: ticket }
+        annotations: { summary: "p95 time-to-first-token above 4s" }
+
+      - alert: LLMFailoverActive
+        expr: sum(rate(bankai_llm_calls_total{provider="self_hosted"}[5m])) > 0 and sum(rate(bankai_llm_calls_total{provider="anthropic"}[5m])) == 0
+        for: 5m
+        labels: { severity: ticket }
+        annotations: { summary: "All traffic is on the self-hosted fallback; check third-party provider health" }
+
+      - alert: LLMSpendSpike
+        expr: sum(increase(bankai_llm_cost_usd_total[1h])) > 50
+        labels: { severity: page }
+        annotations: { summary: "LLM spend above $50 in the last hour" }
+
+      - alert: InjectionAttemptsSpike
+        expr: sum(increase(bankai_guardrail_events_total{type=~"prompt_injection_.*"}[15m])) > 30
+        labels: { severity: ticket }
+        annotations: { summary: "Spike in prompt-injection attempts - possible probing campaign" }
+
+      - alert: ToolDenials
+        expr: sum(increase(bankai_tool_calls_total{outcome="denied"}[15m])) > 0
+        labels: { severity: ticket }
+        annotations: { summary: "An agent attempted a tool outside its permissions - review the audit trail" }
+
+      - alert: MCPToolErrors
+        expr: sum by (server) (rate(bankai_mcp_tool_calls_total{outcome!~"ok|denied|not_found|not_eligible"}[5m])) > 0.1
+        for: 5m
+        labels: { severity: page }
+        annotations: { summary: "MCP server {{ $labels.server }} failing against core banking" }
+
+      - alert: HostDiskFilling
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) < 0.10
+        for: 10m
+        labels: { severity: ticket }
+        annotations: { summary: "Disk below 10% free on {{ $labels.instance }}" }
+
+      - alert: HostCPUHigh
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.85
+        for: 15m
+        labels: { severity: ticket }
+        annotations: { summary: "CPU above 85% on {{ $labels.instance }}" }

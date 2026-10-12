@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.db
+eval-report*.json
+web/node_modules/
+web/dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dump.rdb
+deploy/modal/.llm_token

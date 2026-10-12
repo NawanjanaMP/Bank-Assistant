@@ -1,0 +1,81 @@
+{
+  "realm": "bank",
+  "enabled": true,
+  "displayName": "Northwind Bank",
+  "sslRequired": "external",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 900,
+  "ssoSessionMaxLifespan": 28800,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "permanentLockout": false,
+  "otpPolicyType": "totp",
+  "acrLoaMap": { "aal1": 1, "aal2": 2 },
+  "clientScopes": [
+    { "name": "banking:accounts.read", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } },
+    { "name": "banking:transactions.read", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } },
+    { "name": "banking:statements.request", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } },
+    { "name": "banking:profile.write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } },
+    { "name": "banking:chequebook.request", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } },
+    { "name": "banking:kyc.write", "protocol": "openid-connect", "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" } }
+  ],
+  "clients": [
+    {
+      "clientId": "bank-assistant-web",
+      "name": "Bank assistant (web)",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:5173/*", "http://localhost:8443/*"],
+      "webOrigins": ["http://localhost:5173", "http://localhost:8443"],
+      "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost:8443/*" },
+      "defaultClientScopes": ["profile", "banking:accounts.read", "banking:transactions.read"],
+      "optionalClientScopes": ["banking:statements.request", "banking:profile.write", "banking:chequebook.request", "banking:kyc.write"],
+      "protocolMappers": [
+        {
+          "name": "audience-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "bank-assistant-api", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "customer-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": { "user.attribute": "customer_id", "claim.name": "customer_id", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "auth-time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": { "user.session.note": "AUTH_TIME", "claim.name": "auth_time", "jsonType.label": "long", "access.token.claim": "true" }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "nimal",
+      "enabled": true,
+      "email": "nimal.perera@example.lk",
+      "emailVerified": true,
+      "firstName": "Nimal",
+      "lastName": "Perera",
+      "attributes": { "customer_id": ["C-1001"] },
+      "credentials": [{ "type": "password", "value": "Demo!2026-nimal", "temporary": false }],
+      "requiredActions": ["CONFIGURE_TOTP"]
+    },
+    {
+      "username": "ayesha",
+      "enabled": true,
+      "email": "ayesha.f@example.lk",
+      "emailVerified": true,
+      "firstName": "Ayesha",
+      "lastName": "Fernando",
+      "attributes": { "customer_id": ["C-1002"] },
+      "credentials": [{ "type": "password", "value": "Demo!2026-ayesha", "temporary": false }],
+      "requiredActions": ["CONFIGURE_TOTP"]
+    }
+  ]
+}

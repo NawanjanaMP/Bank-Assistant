@@ -1,0 +1,92 @@
+{{- range $name, $c := .Values.components }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels: {{- include "ba.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: {{ $c.replicas }}
+  selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  template:
+    metadata:
+      labels: {{- include "ba.labels" $ | nindent 8 }}
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        checksum/config: {{ toJson $.Values.config | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $c.port | quote }}
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway,
+            labelSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } } }
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: {{ toJson $c.command }}
+          env:
+            - { name: PORT, value: {{ $c.port | quote }} }
+            - { name: BANKAI_SERVICE_NAME, value: "bankai-{{ $name }}" }
+          envFrom:
+            - configMapRef: { name: {{ $.Release.Name }}-config }
+            - secretRef: { name: {{ $.Values.existingSecret }} }
+          ports: [{ name: http, containerPort: {{ $c.port }} }]
+          readinessProbe: { httpGet: { path: {{ if eq $name "orchestrator" }}/readyz{{ else }}/healthz{{ end }}, port: http }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 15, failureThreshold: 4 }
+          resources: {{- toYaml $c.resources | nindent 12 }}
+          securityContext: {{- include "ba.securityContext" $ | nindent 12 }}
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+  labels: {{- include "ba.labels" $ | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/name: {{ $name }} }
+  ports: [{ name: http, port: {{ $c.port }}, targetPort: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $.Release.Name }}-{{ $name }} }
+  minReplicas: {{ $c.autoscale.min }}
+  maxReplicas: {{ $c.autoscale.max }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $c.autoscale.cpu }} } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+---
+# Zero-trust ingress: each component accepts traffic only from the tier above it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $c.allowFrom }}
+        {{- if eq . "edge" }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+        {{- else }}
+        - podSelector: { matchLabels: { app.kubernetes.io/name: {{ . }} } }
+        {{- end }}
+        {{- end }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: observability } }
+{{- end }}

@@ -1,0 +1,22 @@
+# One image for every Python service (orchestrator, MCP servers, mock core banking).
+# The command decides the role. Multi-stage, slim, non-root, read-only-rootfs friendly.
+FROM python:3.12-slim AS build
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /src
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install .
+
+FROM python:3.12-slim AS runtime
+ENV PATH=/opt/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --no-create-home app
+WORKDIR /app
+COPY --from=build /opt/venv /opt/venv
+COPY alembic.ini ./
+COPY migrations ./migrations
+USER 10001:10001
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=3s --retries=3 CMD python -c "import urllib.request,os;urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/healthz')"
+CMD ["bankai-orchestrator"]

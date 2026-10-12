@@ -1,0 +1,6 @@
+apiVersion: v2
+name: bank-assistant
+description: Multi-agent banking assistant - orchestrator, MCP servers and web UI
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

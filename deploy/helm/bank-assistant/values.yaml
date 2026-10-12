@@ -1,0 +1,69 @@
+image:
+  repository: registry.example.com/bankai/python
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+webImage:
+  repository: registry.example.com/bankai/web
+  tag: "1.0.0"
+
+# Non-secret configuration (BANKAI_* env). Secrets come from `existingSecret`
+# (BANKAI_ANTHROPIC_API_KEY, BANKAI_CONTEXT_TOKEN_SIGNING_KEY, BANKAI_PII_VAULT_KEY,
+#  BANKAI_CORE_BANKING_API_KEY, BANKAI_REDIS_URL, BANKAI_DATABASE_URL) - e.g. synced from Vault
+# by External Secrets Operator.
+existingSecret: bankai-secrets
+config:
+  BANKAI_ENV: prod
+  BANKAI_AUTH_MODE: oidc
+  BANKAI_OIDC_ISSUER: https://login.bank.example/realms/bank
+  BANKAI_OIDC_AUDIENCE: bank-assistant-api
+  BANKAI_LLM_PRIMARY: anthropic
+  BANKAI_LLM_FALLBACK: self_hosted
+  BANKAI_SELF_HOSTED_BASE_URL: http://vllm.llm.svc.cluster.local:8000/v1
+  BANKAI_SELF_HOSTED_MODEL: qwen2.5-32b-instruct
+  BANKAI_SELF_HOSTED_ONLY_AGENTS: '["service"]'
+  BANKAI_MCP_ACCOUNTS_URL: http://bank-assistant-mcp-accounts:9101/mcp
+  BANKAI_MCP_TRANSACTIONS_URL: http://bank-assistant-mcp-transactions:9102/mcp
+  BANKAI_MCP_SERVICE_URL: http://bank-assistant-mcp-service:9103/mcp
+  BANKAI_CORE_BANKING_URL: https://esb.bank.internal/api
+  BANKAI_OTEL_EXPORTER_ENDPOINT: http://otel-collector.observability:4318
+  BANKAI_CORS_ORIGINS: '["https://assistant.bank.example"]'
+
+components:
+  orchestrator:
+    command: ["bankai-orchestrator"]
+    port: 8000
+    replicas: 3
+    autoscale: { min: 3, max: 20, cpu: 65 }
+    resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 1Gi } }
+    # Only the orchestrator may call LLM providers (egress) and the MCP servers.
+    allowFrom: [edge]
+  mcp-accounts:
+    command: ["bankai-mcp", "accounts"]
+    port: 9101
+    replicas: 2
+    autoscale: { min: 2, max: 8, cpu: 70 }
+    resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 512Mi } }
+    allowFrom: [orchestrator]
+  mcp-transactions:
+    command: ["bankai-mcp", "transactions"]
+    port: 9102
+    replicas: 2
+    autoscale: { min: 2, max: 8, cpu: 70 }
+    resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 512Mi } }
+    allowFrom: [orchestrator]
+  mcp-service:
+    command: ["bankai-mcp", "service"]
+    port: 9103
+    replicas: 2
+    autoscale: { min: 2, max: 6, cpu: 70 }
+    resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 512Mi } }
+    allowFrom: [orchestrator]
+
+web:
+  replicas: 2
+  port: 8080
+
+ingress:
+  className: nginx  # fronted by the WAF / CDN edge
+  host: assistant.bank.example
+  tlsSecret: assistant-tls

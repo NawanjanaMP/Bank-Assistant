@@ -1,0 +1,169 @@
+# Full stack for local development, demos and integration testing.
+#   make up                      -> everything, simulator LLM unless an API key is set
+#   docker compose --profile self-hosted up   -> also starts a local Ollama for the self-hosted path
+# Open http://localhost:8443 (through the edge/WAF). Keycloak admin: http://localhost:8080 (admin/admin).
+
+x-python: &python
+  build: { context: ., dockerfile: docker/Dockerfile.python }
+  image: bankai/python:local
+  env_file: .env
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  networks: [internal]
+
+services:
+  # ---------------------------------------------------------------- edge
+  edge:
+    image: owasp/modsecurity-crs:nginx
+    ports: ["8443:8443"]
+    environment:
+      PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      MODSEC_AUDIT_LOG_FORMAT: JSON
+    volumes:
+      - ./deploy/edge/nginx.conf:/etc/nginx/templates/conf.d/default.conf.template:ro
+      - ./deploy/edge/modsecurity-overrides.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:ro
+      - ./deploy/edge/modsecurity-before-crs.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
+    depends_on: [orchestrator, web]
+    networks: [public, internal]
+
+  web:
+    build:
+      context: ./web
+      args:
+        VITE_AUTH_MODE: ${WEB_AUTH_MODE:-oidc}
+        VITE_OIDC_ISSUER: http://localhost:8080/realms/bank
+    networks: [internal]
+
+  # ---------------------------------------------------------------- identity
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8080
+    ports: ["8080:8080"]
+    volumes: ["./deploy/keycloak/realm-bank.json:/opt/keycloak/data/import/realm-bank.json:ro"]
+    networks: [public, internal]
+
+  # ---------------------------------------------------------------- application
+  migrate:
+    <<: *python
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on: { postgres: { condition: service_healthy } }
+
+  orchestrator:
+    <<: *python
+    command: ["bankai-orchestrator"]
+    environment:
+      PORT: "8000"
+      BANKAI_SERVICE_NAME: bankai-orchestrator
+    depends_on:
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      mcp-accounts: { condition: service_started }
+      mcp-transactions: { condition: service_started }
+      mcp-service: { condition: service_started }
+
+  mcp-accounts:
+    <<: *python
+    command: ["bankai-mcp", "accounts", "--port", "9101"]
+    environment: { PORT: "9101" }
+    depends_on: [core-banking]
+
+  mcp-transactions:
+    <<: *python
+    command: ["bankai-mcp", "transactions", "--port", "9102"]
+    environment: { PORT: "9102" }
+    depends_on: [core-banking]
+
+  mcp-service:
+    <<: *python
+    command: ["bankai-mcp", "service", "--port", "9103"]
+    environment: { PORT: "9103" }
+    depends_on: [core-banking]
+
+  core-banking:
+    <<: *python
+    command: ["bankai-core-banking"]
+    environment: { PORT: "9200" }
+
+  # ---------------------------------------------------------------- data
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-devpassword}"]
+    healthcheck: { test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devpassword}", "ping"], interval: 5s, retries: 10 }
+    volumes: [redis-data:/data]
+    networks: [internal]
+
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: bankai, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bankai}", POSTGRES_DB: bankai }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U bankai"], interval: 5s, retries: 10 }
+    volumes: [pg-data:/var/lib/postgresql/data]
+    networks: [internal]
+
+  # ---------------------------------------------------------------- self-hosted LLM (optional)
+  ollama:
+    profiles: [self-hosted]
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]  # exposed so bankai-eval can reach it from the host
+    volumes: [ollama-data:/root/.ollama]
+    networks: [internal]
+    # GPU: uncomment for NVIDIA hosts
+    # deploy: { resources: { reservations: { devices: [{ capabilities: [gpu] }] } } }
+
+  # ---------------------------------------------------------------- observability
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes: ["./deploy/otel/collector.yaml:/etc/otel/collector.yaml:ro"]
+    networks: [internal]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports: ["16686:16686"]
+    networks: [internal, public]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    networks: [internal, public]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment: { GF_SECURITY_ADMIN_PASSWORD: admin, GF_AUTH_ANONYMOUS_ENABLED: "false" }
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    networks: [internal, public]
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    pid: host
+    volumes: ["/:/host:ro,rslave"]
+    command: ["--path.rootfs=/host"]
+    networks: [internal]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    volumes: ["/:/rootfs:ro", "/var/run:/var/run:ro", "/sys:/sys:ro", "/var/lib/docker/:/var/lib/docker:ro"]
+    networks: [internal]
+
+networks:
+  public: {}
+  internal: {}
+
+volumes:
+  redis-data: {}
+  pg-data: {}
+  ollama-data: {}
